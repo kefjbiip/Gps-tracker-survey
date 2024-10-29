@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GPS Position Averager</title>
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            max-width: 600px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+        .controls {
+            margin: 1rem 0;
+        }
+        button {
+            padding: 0.5rem 1rem;
+            margin-right: 0.5rem;
+        }
+        #status {
+            margin: 1rem 0;
+            padding: 0.5rem;
+            border-radius: 4px;
+        }
+        .error {
+            background-color: #fee;
+            color: #c00;
+        }
+        .success {
+            background-color: #efe;
+            color: #0c0;
+        }
+        #readings {
+            margin-top: 1rem;
+        }
+        .permission-guide {
+            background-color: #f0f0f0;
+            padding: 1rem;
+            border-radius: 4px;
+            margin: 1rem 0;
+            display: none;
+        }
+        .permission-guide.visible {
+            display: block;
+        }
+        .permission-guide ol {
+            margin: 0;
+            padding-left: 1.5rem;
+        }
+    </style>
+</head>
+<body>
+    <h1>GPS Position Averager</h1>
+    
+    <div class="permission-guide" id="permissionGuide">
+        <h3>Location Access Required</h3>
+        <p>To reset location permission in Chrome:</p>
+        <ol>
+            <li>Click the lock/shield icon 🔒 in the address bar</li>
+            <li>Find "Location" in the site settings</li>
+            <li>Change it from "Block" to "Ask" (or clear the setting)</li>
+            <li>Reload this page</li>
+            <li>Click "Start" again when ready</li>
+        </ol>
+    </div>
+
+    <div id="status"></div>
+    <div class="controls">
+        <button id="startBtn">Start</button>
+        <button id="stopBtn" disabled>Stop</button>
+        <button id="resetBtn">Check Permissions</button>
+    </div>
+    <div id="readings">
+        <h2>Current Position</h2>
+        <p>Latitude: <span id="currentLat">-</span></p>
+        <p>Longitude: <span id="currentLon">-</span></p>
+        <p>Accuracy: <span id="accuracy">-</span> meters</p>
+        
+        <h2>Average Position</h2>
+        <p>Latitude: <span id="avgLat">-</span></p>
+        <p>Longitude: <span id="avgLon">-</span></p>
+        <p>Samples: <span id="sampleCount">0</span></p>
+    </div>
+
+    <script>
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const status = document.getElementById('status');
+        const currentLat = document.getElementById('currentLat');
+        const currentLon = document.getElementById('currentLon');
+        const accuracy = document.getElementById('accuracy');
+        const avgLat = document.getElementById('avgLat');
+        const avgLon = document.getElementById('avgLon');
+        const sampleCount = document.getElementById('sampleCount');
+        const permissionGuide = document.getElementById('permissionGuide');
+
+        let watchId = null;
+        let readings = [];
+
+        function showError(message) {
+            status.textContent = message;
+            status.className = 'error';
+        }
+
+        function showSuccess(message) {
+            status.textContent = message;
+            status.className = 'success';
+        }
+
+        function showPermissionGuide() {
+            permissionGuide.classList.add('visible');
+        }
+
+        function hidePermissionGuide() {
+            permissionGuide.classList.remove('visible');
+        }
+
+        function updateAverages() {
+            if (readings.length === 0) return;
+
+            const sumLat = readings.reduce((sum, pos) => sum + pos.latitude, 0);
+            const sumLon = readings.reduce((sum, pos) => sum + pos.longitude, 0);
+            
+            avgLat.textContent = (sumLat / readings.length).toFixed(6);
+            avgLon.textContent = (sumLon / readings.length).toFixed(6);
+            sampleCount.textContent = readings.length;
+        }
+
+        function handlePositionError(error) {
+            switch(error.code) {
+                case error.PERMISSION_DENIED:
+                    showError("Location access was denied.");
+                    showPermissionGuide();
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    showError("Location information unavailable. Please check if GPS is enabled.");
+                    break;
+                case error.TIMEOUT:
+                    showError("Location request timed out. Please try again.");
+                    break;
+                default:
+                    showError("An unknown error occurred: " + error.message);
+            }
+            stopTracking();
+        }
+
+        async function checkLocationPermission() {
+            try {
+                const result = await navigator.permissions.query({ name: 'geolocation' });
+                switch (result.state) {
+                    case 'granted':
+                        hidePermissionGuide();
+                        showSuccess('Location permission is granted');
+                        return true;
+                    case 'prompt':
+                        hidePermissionGuide();
+                        showSuccess('Click Start to begin tracking');
+                        return true;
+                    case 'denied':
+                        showPermissionGuide();
+                        showError('Location permission is blocked');
+                        return false;
+                }
+            } catch (error) {
+                console.log('Permissions API not supported:', error);
+                return true; // Fallback to regular geolocation request
+            }
+        }
+
+        async function startTracking() {
+            if (!navigator.geolocation) {
+                showError('Geolocation is not supported by your browser');
+                return;
+            }
+
+            const hasPermission = await checkLocationPermission();
+            if (!hasPermission) return;
+
+            readings = [];
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            showSuccess('Starting GPS tracking...');
+
+            const options = {
+                enableHighAccuracy: true,
+                timeout: 5000,
+                maximumAge: 0
+            };
+
+            try {
+                // First try to get a single position to trigger the permission prompt
+                navigator.geolocation.getCurrentPosition(
+                    () => {
+                        // If successful, start continuous tracking
+                        watchId = navigator.geolocation.watchPosition(
+                            (position) => {
+                                const { latitude, longitude, accuracy: acc } = position.coords;
+                                currentLat.textContent = latitude.toFixed(6);
+                                currentLon.textContent = longitude.toFixed(6);
+                                accuracy.textContent = acc.toFixed(1);
+                                readings.push({ latitude, longitude });
+                                updateAverages();
+                                hidePermissionGuide();
+                                showSuccess('GPS tracking active - collecting readings...');
+                            },
+                            handlePositionError,
+                            options
+                        );
+                    },
+                    handlePositionError,
+                    options
+                );
+            } catch (error) {
+                showError('Error starting GPS tracking: ' + error.message);
+                stopTracking();
+            }
+        }
+
+        function stopTracking() {
+            if (watchId !== null) {
+                navigator.geolocation.clearWatch(watchId);
+                watchId = null;
+            }
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            showSuccess('Tracking stopped');
+        }
+
+        startBtn.addEventListener('click', startTracking);
+        stopBtn.addEventListener('click', stopTracking);
+        resetBtn.addEventListener('click', checkLocationPermission);
+
+        // Check permission status on page load
+        checkLocationPermission();
+    </script>
+</body>
+</html>
